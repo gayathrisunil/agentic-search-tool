@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"><title>Agentic Search Agent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .spin { animation: spin 1s linear infinite; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        .popover { display: none; position: absolute; z-index: 50; }
+        .popover.active { display: block; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        .cell-loading { background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+                        background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    </style>
+</head>
+<body class="bg-slate-50 p-4 md:p-8 text-sm">
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-8 flex items-start justify-between">
+            <div>
+                <h1 class="text-3xl font-black text-slate-900 tracking-tight mb-1">Agentic Search Agent</h1>
+                <p class="text-slate-400 text-sm">Dynamic schema inference, full-page scraping & multi-angle web search.</p>
+            </div>
+            <a href="https://github.com/your-username/ag-search" target="_blank" rel="noopener"
+               class="flex items-center gap-2 text-xs text-slate-500 hover:text-slate-800 bg-white border border-slate-200 px-3 py-2 rounded-lg transition-colors">
+                <svg class="w-4 h-4" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                GitHub
+            </a>
+        </header>
+
+        <form id="searchForm" class="bg-white p-3 rounded-xl shadow-lg flex gap-3 mb-8 border border-slate-200">
+            <input type="text" id="query" placeholder="e.g. 'AI Healthcare startups', 'best pizza in Amherst'..."
+                   class="flex-1 p-3 bg-transparent text-base outline-none" required>
+            <button type="submit" id="btn" class="bg-blue-600 text-white px-8 rounded-lg font-bold text-sm hover:scale-105 transition-all">Search</button>
+        </form>
+
+        <!-- Status pipeline indicator -->
+        <div id="pipeline" class="hidden mb-6">
+            <div class="flex items-center gap-2 text-xs text-slate-500 bg-white border border-slate-200 rounded-lg px-4 py-2.5">
+                <div class="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full spin"></div>
+                <span id="pipelineText">Classifying query...</span>
+            </div>
+        </div>
+
+        <div id="error" class="hidden bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl mb-6 text-sm"></div>
+
+        <div id="results" class="hidden">
+            <div class="bg-white rounded-xl shadow-xl overflow-hidden border border-slate-200">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse text-sm">
+                        <thead id="tableHead" class="bg-slate-50 border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-widest"></thead>
+                        <tbody id="tableBody" class="divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div id="meta" class="mt-4 text-xs text-slate-400 grid grid-cols-4 gap-3 font-mono"></div>
+        </div>
+    </div>
+
+    <!-- Cell popover for source/evidence -->
+    <div id="cellPopover" class="popover bg-white border border-slate-200 rounded-xl shadow-2xl p-3 max-w-xs">
+        <div id="popoverContent"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('searchForm');
+        const pipeline = document.getElementById('pipeline');
+        const pipelineText = document.getElementById('pipelineText');
+        const results = document.getElementById('results');
+        const errorDiv = document.getElementById('error');
+        const popover = document.getElementById('cellPopover');
+
+        // Current state
+        let currentSchema = [];
+        let currentEntities = [];
+        let currentQuery = '';
+        let tableRevealed = false;
+        let backfillTimeout = null;
+        const BACKFILL_TIMEOUT_MS = 15000; // stop shimmer after 15s
+
+        document.addEventListener('click', (e) => {
+            if (!popover.contains(e.target) && !e.target.closest('.cell-with-source')) {
+                popover.classList.remove('active');
+            }
+        });
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const q = document.getElementById('query').value;
+            currentQuery = q;
+            currentSchema = [];
+            currentEntities = [];
+            tableRevealed = false;
+            if (backfillTimeout) clearTimeout(backfillTimeout);
+
+            pipeline.classList.remove('hidden');
+            pipelineText.textContent = 'Classifying query...';
+            results.classList.add('hidden');
+            errorDiv.classList.add('hidden');
+            document.getElementById('btn').disabled = true;
+            document.getElementById('tableHead').innerHTML = '';
+            document.getElementById('tableBody').innerHTML = '';
+            document.getElementById('meta').innerHTML = '';
+
+            try {
+                const res = await fetch('http://localhost:8000/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: q })
+                });
+
+                if (res.status === 429) {
+                    throw new Error('Rate limit exceeded. Please wait a moment.');
+                }
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `Server error (${res.status})`);
+                }
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // Parse SSE events from buffer
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // keep incomplete line
+
+                    let eventName = '';
+                    let eventData = '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('event: ')) {
+                            eventName = line.slice(7);
+                        } else if (line.startsWith('data: ')) {
+                            eventData = line.slice(6);
+                            if (eventName && eventData) {
+                                handleSSE(eventName, JSON.parse(eventData));
+                                eventName = '';
+                                eventData = '';
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                errorDiv.textContent = err.message;
+                errorDiv.classList.remove('hidden');
+            } finally {
+                pipeline.classList.add('hidden');
+                document.getElementById('btn').disabled = false;
+            }
+        });
+
+        function handleSSE(event, data) {
+            switch (event) {
+                case 'status':
+                    handleStatus(data);
+                    break;
+                case 'schema':
+                    handleSchema(data);
+                    break;
+                case 'entities':
+                    handleEntities(data);
+                    break;
+                case 'cell_update':
+                    handleCellUpdate(data);
+                    break;
+                case 'complete':
+                    handleComplete(data);
+                    break;
+                case 'error':
+                    errorDiv.textContent = data.detail || 'Pipeline error';
+                    errorDiv.classList.remove('hidden');
+                    pipeline.classList.add('hidden');
+                    break;
+            }
+        }
+
+        function handleStatus(data) {
+            const messages = {
+                'classify': () => {
+                    let msg = `Query type: ${data.query_type}`;
+                    if (data.ranking_metric) msg += ` (ranking by: ${data.ranking_metric})`;
+                    msg += ' \u2014 Searching...';
+                    return msg;
+                },
+                'search_done': () => `Found ${data.pages_found} pages \u2014 Extracting data...`,
+            };
+            const fn = messages[data.step];
+            if (fn) pipelineText.textContent = fn();
+        }
+
+        function handleSchema(data) {
+            currentSchema = data.schema_fields || [];
+            // Don't show table yet — wait until entities have enough data
+            pipelineText.textContent = 'Schema ready \u2014 Extracting entities...';
+        }
+
+        function revealTable() {
+            if (tableRevealed) return;
+            tableRevealed = true;
+
+            const head = document.getElementById('tableHead');
+            head.innerHTML = `<tr>${currentSchema.map(f =>
+                `<th class="p-3.5 font-bold cursor-pointer hover:text-blue-600 select-none" data-field="${f.name}">${f.display_name}</th>`
+            ).join('')}</tr>`;
+            results.classList.remove('hidden');
+
+            // Attach sorting
+            head.querySelectorAll('th').forEach(th => {
+                th.addEventListener('click', () => {
+                    const field = th.dataset.field;
+                    const dir = th.dataset.dir === 'asc' ? 'desc' : 'asc';
+                    head.querySelectorAll('th').forEach(t => t.dataset.dir = '');
+                    th.dataset.dir = dir;
+                    currentEntities.sort((a, b) => {
+                        const va = getFieldValue(a, field, currentSchema) || '';
+                        const vb = getFieldValue(b, field, currentSchema) || '';
+                        const cmp = String(va).localeCompare(String(vb), undefined, {numeric: true});
+                        return dir === 'asc' ? cmp : -cmp;
+                    });
+                    renderRows(document.getElementById('tableBody'), currentEntities, currentSchema);
+                });
+            });
+        }
+
+        // Check if at least one entity has >= 2 filled columns
+        function hasEnoughData(entities, schema) {
+            if (!entities.length || !schema.length) return false;
+            for (const ent of entities) {
+                const fields = ent.fields || {};
+                let filled = 0;
+                for (const sf of schema) {
+                    const item = findField(fields, sf);
+                    const val = (typeof item === 'object' && item !== null) ? item.value : item;
+                    if (val) filled++;
+                }
+                if (filled >= 2) return true;
+            }
+            return false;
+        }
+
+        function handleEntities(data) {
+            currentEntities = data.entities || [];
+            if (data.schema_fields) currentSchema = data.schema_fields;
+
+            // Only reveal table once there's enough data (>= 2 filled columns)
+            if (hasEnoughData(currentEntities, currentSchema)) {
+                revealTable();
+                renderRows(document.getElementById('tableBody'), currentEntities, currentSchema);
+
+                // Start backfill timeout — stop shimmer on cells that never fill
+                if (backfillTimeout) clearTimeout(backfillTimeout);
+                backfillTimeout = setTimeout(stopAllShimmer, BACKFILL_TIMEOUT_MS);
+            }
+
+            if (data.partial) {
+                pipelineText.textContent = `Found ${currentEntities.length} entities \u2014 Filling details...`;
+            }
+        }
+
+        function stopAllShimmer() {
+            document.querySelectorAll('.cell-loading').forEach(cell => {
+                cell.classList.remove('cell-loading');
+            });
+        }
+
+        function handleCellUpdate(data) {
+            const { entity_index, field_name, field_data } = data;
+            if (entity_index < currentEntities.length) {
+                if (!currentEntities[entity_index].fields) currentEntities[entity_index].fields = {};
+                currentEntities[entity_index].fields[field_name] = field_data;
+
+                // Update just that cell
+                const cellId = `cell-${entity_index}-${field_name}`;
+                const cell = document.getElementById(cellId);
+                if (cell) {
+                    const val = field_data.value;
+                    const url = (field_data.sources && field_data.sources[0]?.url) || field_data.source_url || '';
+                    let sourceHtml = '';
+                    if (url) {
+                        sourceHtml = `<a href="${url}" target="_blank" rel="noopener" class="text-[9px] text-blue-500 font-bold hover:underline mt-0.5 block">SOURCE</a>`;
+                    }
+                    cell.innerHTML = `<div class="text-slate-800 font-medium fade-in">${val || '\u2014'}</div>${sourceHtml}`;
+                    cell.classList.remove('cell-loading');
+                }
+
+                // If table not yet shown, check if we now have enough data
+                if (!tableRevealed && hasEnoughData(currentEntities, currentSchema)) {
+                    revealTable();
+                    renderRows(document.getElementById('tableBody'), currentEntities, currentSchema);
+                }
+            }
+        }
+
+        function handleComplete(data) {
+            currentEntities = data.entities || [];
+            if (data.schema_fields) currentSchema = data.schema_fields;
+
+            // Always reveal table on complete (even if data was sparse)
+            revealTable();
+            renderRows(document.getElementById('tableBody'), currentEntities, currentSchema);
+
+            // Stop all shimmer animations
+            if (backfillTimeout) clearTimeout(backfillTimeout);
+            stopAllShimmer();
+
+            const m = data.metadata || {};
+            document.getElementById('meta').innerHTML = `
+                <div class="bg-white p-2.5 rounded-lg border border-slate-200">
+                    <div class="text-slate-300 text-[9px] mb-0.5">DURATION</div>
+                    <div class="text-slate-700 font-bold">${m.pipeline_duration_seconds || 0}s</div>
+                </div>
+                <div class="bg-white p-2.5 rounded-lg border border-slate-200">
+                    <div class="text-slate-300 text-[9px] mb-0.5">SOURCES</div>
+                    <div class="text-slate-700 font-bold">${m.sources_scraped || 0} / ${m.sources_found || 0}</div>
+                </div>
+                <div class="bg-white p-2.5 rounded-lg border border-slate-200">
+                    <div class="text-slate-300 text-[9px] mb-0.5">ENTITIES</div>
+                    <div class="text-slate-700 font-bold">${m.count || 0}</div>
+                </div>
+                <div class="bg-white p-2.5 rounded-lg border border-slate-200">
+                    <div class="text-slate-300 text-[9px] mb-0.5">LLM CALLS</div>
+                    <div class="text-slate-700 font-bold">${m.llm_calls || '?'}</div>
+                </div>
+            `;
+
+            pipeline.classList.add('hidden');
+        }
+
+        // ── Table rendering ─────────────────────────────────────────────
+
+        function getFieldValue(ent, fieldName, schema) {
+            const fields = ent.fields || {};
+            const sf = schema.find(s => s.name === fieldName);
+            const item = fields[fieldName] || (sf && fields[sf.display_name]);
+            if (!item) return null;
+            return typeof item === 'object' ? item.value : item;
+        }
+
+        function getEntityName(ent) {
+            const first = ent.fields && Object.values(ent.fields)[0];
+            return (typeof first === 'object' && first !== null) ? first.value : first;
+        }
+
+        function findField(fields, sf) {
+            return fields[sf.name] || fields[sf.display_name] ||
+                fields[Object.keys(fields).find(k =>
+                    k.toLowerCase() === sf.name.toLowerCase() ||
+                    k.toLowerCase() === (sf.display_name || '').toLowerCase() ||
+                    k.toLowerCase().replace(/[ _]/g, '') === sf.name.toLowerCase().replace(/[ _]/g, '')
+                )];
+        }
+
+        function renderRows(body, entities, schema) {
+            body.innerHTML = entities.length ? entities.map((ent, ei) => `
+                <tr class="hover:bg-blue-50/40 transition-colors fade-in">
+                    ${schema.map(sf => {
+                        const fields = ent.fields || {};
+                        const item = findField(fields, sf);
+
+                        const val = (typeof item === 'object' && item !== null) ? item.value : item;
+                        const sources = (typeof item === 'object' && item !== null) ? (item.sources || []) : [];
+                        const url = sources[0]?.url || ent.source_url || '';
+                        const hasUrl = url && url.startsWith('http');
+                        const entityName = getEntityName(ent);
+                        const googleUrl = entityName ? `https://www.google.com/search?q=${encodeURIComponent(entityName)}` : '';
+                        const linkUrl = hasUrl ? url : googleUrl;
+
+                        const cellId = `cell-${ei}-${sf.name}`;
+                        const isMissing = !val;
+
+                        let sourceHtml = '';
+                        if (linkUrl) {
+                            sourceHtml = `<a href="${linkUrl}" target="_blank" rel="noopener" class="text-[9px] text-blue-500 font-bold hover:underline mt-0.5 block">SOURCE</a>`;
+                        }
+
+                        const loadingClass = isMissing ? 'cell-loading' : '';
+
+                        return `<td class="p-3.5 ${loadingClass}" id="${cellId}">
+                            <div class="text-slate-800 font-medium ${isMissing ? 'text-slate-300' : ''}">${isMissing ? '\u2014' : val}</div>
+                            ${isMissing ? '' : sourceHtml}
+                        </td>`;
+                    }).join('')}
+                </tr>
+            `).join('') : '<tr><td colspan="100%" class="p-8 text-center text-slate-400">No entities discovered.</td></tr>';
+        }
+
+        function showPopover(event, el) {
+            event.stopPropagation();
+            const evidence = decodeURIComponent(el.dataset.evidence);
+            let sources = [];
+            try { sources = JSON.parse(decodeURIComponent(el.dataset.sources)); } catch(e) {}
+            const url = el.dataset.url;
+
+            let html = '';
+            if (evidence) {
+                html += `<div class="mb-2"><div class="text-[9px] text-slate-400 font-bold uppercase mb-0.5">Evidence</div>
+                    <blockquote class="text-xs text-slate-600 border-l-2 border-blue-300 pl-2 italic">"${evidence}"</blockquote></div>`;
+            }
+            if (sources.length > 0 || url) {
+                html += `<div class="text-[9px] text-slate-400 font-bold uppercase mb-0.5">Sources</div>`;
+                const allUrls = sources.length > 0 ? sources : [{url}];
+                allUrls.forEach(s => {
+                    if (s.url) {
+                        const display = s.url.length > 45 ? s.url.substring(0, 45) + '...' : s.url;
+                        html += `<a href="${s.url}" target="_blank" class="block text-[11px] text-blue-600 hover:underline truncate mb-0.5">${display}</a>`;
+                    }
+                });
+            }
+            if (!html) html = '<div class="text-xs text-slate-400">No source details available</div>';
+
+            document.getElementById('popoverContent').innerHTML = html;
+
+            const rect = el.getBoundingClientRect();
+            popover.style.top = (window.scrollY + rect.bottom + 6) + 'px';
+            popover.style.left = Math.min(rect.left, window.innerWidth - 320) + 'px';
+            popover.classList.add('active');
+        }
+    </script>
+</body>
+</html>
