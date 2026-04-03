@@ -740,6 +740,12 @@ async def backfill_cell(request: BackfillRequest, req: Request):
     return await _do_backfill(request.query, request.entity_name, request.field_name, request.field_display_name)
 
 
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "ok"}
+
+
 @app.get("/api/config")
 async def get_config():
     """Return the current server configuration."""
