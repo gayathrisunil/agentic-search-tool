@@ -302,7 +302,7 @@
 
         function handleComplete(data) {
             currentEntities = data.entities || [];
-            if (data.schema_fields) currentSchema = data.schema_fields;
+            // Don't update schema on complete — keep the full schema so columns don't shift
 
             // Always reveal table on complete (even if data was sparse)
             revealTable();
