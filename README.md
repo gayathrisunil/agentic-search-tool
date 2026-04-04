@@ -2,27 +2,8 @@
 
 An agentic search tool that classifies user queries by intent, generates dynamic schemas, scrapes the web, extracts structured entities using LLMs, and streams results progressively via Server-Sent Events. The pipeline adapts its strategy based on whether the user wants ranked results, general information, or navigational/transactional data.
 
-## Project Structure
-
-```
-ag-search/
-├── backend/
-│   ├── __init__.py
-│   ├── main.py                 # FastAPI app, SSE streaming, pipeline orchestration
-│   ├── prompts.py              # All LLM system prompts and agent role definitions
-│   └── utils/
-│       ├── __init__.py
-│       ├── llm.py              # LLM client setup, completion, JSON parsing
-│       ├── scraper.py          # HTML fetching and text extraction
-│       ├── search.py           # Web search providers (Brave, Firecrawl) + URL blocklist
-│       └── dedup.py            # Entity deduplication and field merging
-├── frontend/
-│   └── index.html              # Single-page UI with SSE streaming (Tailwind CSS)
-├── .env                        # API keys and config
-├── .gitignore
-├── requirements.txt            # Python dependencies
-└── README.md
-```
+# Demo
+https://github.com/user-attachments/assets/bf34f38a-90ce-43bc-a672-aef8051ef9fe
 
 ## Solution
 
@@ -236,3 +217,26 @@ curl -N -X POST http://localhost:8000/api/search \
 - **Schema consistency**: Cache schemas per topic category for comparable results.
 - **Confidence scoring**: Have the LLM assign confidence to extracted values.
 - **Observability**: Add OpenTelemetry tracing and token usage metrics.
+
+
+## Project Structure
+
+```
+ag-search/
+├── backend/
+│   ├── __init__.py
+│   ├── main.py                 # FastAPI app, SSE streaming, pipeline orchestration
+│   ├── prompts.py              # All LLM system prompts and agent role definitions
+│   └── utils/
+│       ├── __init__.py
+│       ├── llm.py              # LLM client setup, completion, JSON parsing
+│       ├── scraper.py          # HTML fetching and text extraction
+│       ├── search.py           # Web search providers (Brave, Firecrawl) + URL blocklist
+│       └── dedup.py            # Entity deduplication and field merging
+├── frontend/
+│   └── index.html              # Single-page UI with SSE streaming (Tailwind CSS)
+├── .env                        # API keys and config
+├── .gitignore
+├── requirements.txt            # Python dependencies
+└── README.md
+```
