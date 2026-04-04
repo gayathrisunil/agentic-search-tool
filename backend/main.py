@@ -202,10 +202,15 @@ def _build_schema_lookup(schema: List[Dict]) -> Dict[str, str]:
     """Build a case-insensitive lookup from field key variants to canonical names."""
     lookup = {}
     for sf in schema:
-        lookup[sf["name"].lower()] = sf["name"]
-        lookup[sf.get("display_name", "").lower()] = sf["name"]
-        lookup[sf["name"].lower().replace("_", " ")] = sf["name"]
-        lookup[sf["name"].lower().replace("_", "")] = sf["name"]
+        name = sf["name"]
+        dn = sf.get("display_name", "")
+        # Exact and common variants
+        lookup[name.lower()] = name
+        lookup[dn.lower()] = name
+        lookup[name.lower().replace("_", " ")] = name
+        lookup[name.lower().replace("_", "")] = name
+        lookup[dn.lower().replace(" ", "_")] = name
+        lookup[dn.lower().replace(" ", "")] = name
     return lookup
 
 
@@ -215,7 +220,16 @@ def _normalize_entities(entities: List[Dict], url: str, schema_lookup: Dict[str,
         ent["source_url"] = url
         normalized = {}
         for key, field in ent.get("fields", {}).items():
-            canonical = schema_lookup.get(key.lower(), key)
+            canonical = schema_lookup.get(key.lower())
+            # Fuzzy fallback: check if any schema field name is contained in the key or vice versa
+            if not canonical:
+                key_lower = key.lower().replace("_", " ")
+                for lk, cn in schema_lookup.items():
+                    if key_lower in lk or lk in key_lower:
+                        canonical = cn
+                        break
+            if not canonical:
+                canonical = key  # pass through if no match at all
             if isinstance(field, dict):
                 field["sources"] = [{"url": url}]
             normalized[canonical] = field
@@ -394,14 +408,36 @@ def _count_missing_fields(ent: Dict, schema: List[Dict]) -> int:
     return missing
 
 
-def _collect_backfill_tasks(entities: List[Dict], schema: List[Dict], max_total: int) -> List[Dict]:
-    """Collect the most impactful backfill tasks up to a cap.
+def _count_filled_fields(ent: Dict, schema: List[Dict]) -> int:
+    """Count how many schema fields (excluding the first) have a value."""
+    fields = ent.get("fields", {})
+    filled = 0
+    for sf in schema[1:]:
+        field = fields.get(sf["name"])
+        if field and isinstance(field, dict) and field.get("value"):
+            filled += 1
+    return filled
 
-    Prioritizes entities with the most missing fields, but skips entities
-    that are already mostly filled (<=1 missing field).
+
+def _collect_backfill_tasks(entities: List[Dict], schema: List[Dict], max_total: int) -> List[Dict]:
+    """Collect backfill tasks up to a cap.
+
+    Rules:
+    - Entities with <2 filled fields (besides name) MUST get at least 1 backfill task
+    - Entities with <=1 missing field are skipped (already mostly filled)
+    - Limit to 3 out of 5 entities max
+    - Cap total tasks at max_total
     """
     tasks = []
+    entities_touched = 0
+    MAX_ENTITIES_TO_BACKFILL = 3
+
     for ei, ent in enumerate(entities):
+        if entities_touched >= MAX_ENTITIES_TO_BACKFILL:
+            break
+        if len(tasks) >= max_total:
+            break
+
         entity_name = None
         first_field = list(ent.get("fields", {}).values())
         if first_field and isinstance(first_field[0], dict):
@@ -409,13 +445,17 @@ def _collect_backfill_tasks(entities: List[Dict], schema: List[Dict], max_total:
         if not entity_name:
             continue
 
+        filled = _count_filled_fields(ent, schema)
         missing = _count_missing_fields(ent, schema)
-        if missing <= 1:
-            continue  # entity is already mostly filled, not worth backfilling
 
+        # Skip if already mostly filled (<=1 missing) AND has enough data (>=2 filled)
+        if missing <= 1 and filled >= 2:
+            continue
+
+        added_for_entity = False
         for sf in schema[1:]:
             if len(tasks) >= max_total:
-                return tasks
+                break
             field = ent["fields"].get(sf["name"])
             if field and isinstance(field, dict) and field.get("value"):
                 continue
@@ -424,6 +464,13 @@ def _collect_backfill_tasks(entities: List[Dict], schema: List[Dict], max_total:
                sf.get("display_name", "").lower() in entity_name.lower():
                 continue
             tasks.append({"ei": ei, "sf": sf, "entity_name": entity_name, "ent": ent})
+            added_for_entity = True
+            # If entity has <2 filled, just add 1 task to get it to >=2
+            if filled < 2:
+                break
+
+        if added_for_entity:
+            entities_touched += 1
 
     return tasks
 
